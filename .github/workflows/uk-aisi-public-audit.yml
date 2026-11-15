@@ -68,7 +68,7 @@ jobs:
           mkdir -p logs/naked
           COMMON_FLAGS="--model openai-api/big4/big4-base-free-nudo -M client_timeout=210 --limit ${LIMIT} --epochs 1 --temperature 0 --max-tokens 8192 --max-connections 3 --no-fail-on-error --score-on-error --retry-on-error=2 --display=plain --log-dir logs/naked"
           inspect eval inspect_evals/mmlu_pro -T shuffle=false --sample-shuffle=42 ${COMMON_FLAGS}
-          inspect eval inspect_evals/truthfulqa --sample-shuffle=42 ${COMMON_FLAGS}
+          inspect eval inspect_evals/truthfulqa -T target=mc1 --sample-shuffle=42 ${COMMON_FLAGS}
           inspect eval inspect_evals/gpqa_diamond --sample-shuffle=42 ${COMMON_FLAGS}
           inspect eval inspect_evals/humaneval -T sandbox=local --sample-shuffle=42 ${COMMON_FLAGS}
 
@@ -81,7 +81,7 @@ jobs:
           mkdir -p logs/big4_cycle5
           COMMON_FLAGS="--model openai-api/big4/big4-ciclo5-free -M client_timeout=210 --limit ${LIMIT} --epochs 1 --temperature 0 --max-tokens 8192 --max-connections 2 --no-fail-on-error --score-on-error --retry-on-error=2 --display=plain --log-dir logs/big4_cycle5"
           inspect eval inspect_evals/mmlu_pro -T shuffle=false --sample-shuffle=42 ${COMMON_FLAGS}
-          inspect eval inspect_evals/truthfulqa --sample-shuffle=42 ${COMMON_FLAGS}
+          inspect eval inspect_evals/truthfulqa -T target=mc1 --sample-shuffle=42 ${COMMON_FLAGS}
           inspect eval inspect_evals/gpqa_diamond --sample-shuffle=42 ${COMMON_FLAGS}
           inspect eval inspect_evals/humaneval -T sandbox=local --sample-shuffle=42 ${COMMON_FLAGS}
 
