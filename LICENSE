@@ -1,0 +1,34 @@
+SCOPE NOTICE:
+This MIT License applies strictly and exclusively to the client-side benchmark
+harness scripts, workflow definitions, container sandbox configuration, unit
+tests, and documentation contained in this public repository.
+
+No license, right, title, or interest is granted—expressly, by implication,
+by estoppel, or otherwise—to Granbell LLC's private server-side Big4 Exocortex /
+Cycle 5 orchestration engine, prompts, routing policies, multi-model pipelines,
+formal verification solvers, API credentials, or any other proprietary trade
+secrets, all of which remain confidential and all rights reserved.
+
+--------------------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) 2026 Granbell LLC
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

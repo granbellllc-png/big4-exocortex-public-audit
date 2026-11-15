@@ -1,9 +1,12 @@
 logs/
 *.eval
 __pycache__/
+.pytest_cache/
 *.pyc
 .venv/
 .env
 *.tmp
 ed25519_audit_report.json
 public_audit_summary.json
+sanitized_sample_outcomes.json
+vps_target_proof.json

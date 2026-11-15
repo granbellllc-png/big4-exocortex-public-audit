@@ -1,0 +1,15 @@
+# Airgapped, credential-free Docker Compose sandbox for executing untrusted
+# LLM-generated Python code during UK AISI Inspect HumanEval runs.
+services:
+  default:
+    image: "python:3.12-slim"
+    command: "tail -f /dev/null"
+    init: true
+    network_mode: none
+    stop_grace_period: 1s
+    mem_limit: 512m
+    cpus: 1.0
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

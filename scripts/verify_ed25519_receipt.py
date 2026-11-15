@@ -2,16 +2,20 @@
 """
 Standalone Offline Ed25519 Receipt Verifier for OpenAI-Compatible Audit Responses.
 
-Independently verifies without trusting server logs or dashboards:
+Cryptographic scope (stated transparently):
   1. SHA-256(choices[0].message.content) == veritas_receipt.payload.response_sha256
   2. SHA-256(veritas_receipt.canonical_payload) == veritas_receipt.payload_sha256
   3. JSON parity between canonical_payload and payload
   4. Pinned public key match (--public-key <pem_file>)
-  5. Cryptographic Ed25519 signature over UTF-8 canonical_payload bytes
+  5. Cryptographic Ed25519 signature verification over UTF-8 canonical_payload bytes
+  6. Optional strict assertions on signed metadata (--require-zdr, --require-zero-cost)
 
-Also provides --live-probe-count N to probe the audit endpoint using env vars
-BIG4_BASE_URL and BIG4_API_KEY (never printing URLs or credentials) and emit
-a sanitized verification report JSON.
+Note: An Ed25519 receipt proves payload integrity and signed non-repudiation of the
+metadata declared by the server; it is not an independent hardware attestation of
+remote RAM erasure or third-party upstream provider billing.
+
+All proprietary routing/model-mix fields (`models_used`, `pipeline_executed`,
+`consensus_type`) are stripped from verifier outputs.
 """
 
 from __future__ import annotations
@@ -128,6 +132,8 @@ def verify_receipt(
     resp: Dict[str, Any],
     pinned_pub_pem: Optional[str] = None,
     response_text_override: Optional[str] = None,
+    require_zdr: bool = False,
+    require_zero_cost: bool = False,
 ) -> Dict[str, Any]:
     receipt = resp.get("veritas_receipt")
     if not isinstance(receipt, dict):
@@ -181,6 +187,16 @@ def verify_receipt(
         canonical_payload.encode("utf-8"),
     )
 
+    zdr_val = payload.get("zdr_enforced")
+    cost_raw = payload.get("cost_usd")
+    cost_val: Optional[float] = float(cost_raw) if cost_raw is not None else None
+
+    if require_zdr and zdr_val is not True:
+        raise ValueError(f"Receipt failed ZDR policy check: zdr_enforced={zdr_val!r}")
+    if require_zero_cost and (cost_val is None or cost_val != 0.0):
+        raise ValueError(f"Receipt failed zero-cost policy check: cost_usd={cost_raw!r}")
+
+    # Strictly return non-proprietary attestation fields only (no models_used or pipeline_executed).
     return {
         "ok": True,
         "verdict": "ED25519_OFFLINE_VERIFIED",
@@ -189,11 +205,81 @@ def verify_receipt(
         "schema": payload.get("schema"),
         "model_requested": payload.get("model_requested"),
         "strict_free_only": payload.get("strict_free_only"),
-        "cost_usd": payload.get("cost_usd"),
-        "zdr_enforced": payload.get("zdr_enforced"),
+        "cost_usd": cost_val if cost_raw is not None else None,
+        "zdr_enforced": zdr_val,
         "payload_sha256": computed_payload_sha,
         "response_sha256": computed_resp_sha,
         "public_key_sha256": sha256_hex(pub_to_use.encode("utf-8")),
+    }
+
+
+def verify_jsonl_records(
+    jsonl_path: str,
+    pinned_pem: str,
+    require_zdr: bool = False,
+    require_zero_cost: bool = False,
+) -> Dict[str, Any]:
+    """Load and validate sanitized benchmark-captured receipt records offline."""
+    records: List[Dict[str, Any]] = []
+    verified_count = 0
+    total_count = 0
+    pinned_sha = sha256_hex(pinned_pem.strip().encode("utf-8"))
+
+    with open(jsonl_path, "r", encoding="utf-8") as fh:
+        for line_no, raw_line in enumerate(fh, 1):
+            line = raw_line.strip()
+            if not line:
+                continue
+            total_count += 1
+            rec = json.loads(line)
+            if isinstance(rec.get("veritas_receipt"), dict):
+                res = verify_receipt(
+                    rec,
+                    pinned_pub_pem=pinned_pem,
+                    require_zdr=require_zdr,
+                    require_zero_cost=require_zero_cost,
+                )
+            else:
+                if rec.get("ok") is not True or rec.get("verdict") != "ED25519_OFFLINE_VERIFIED":
+                    raise ValueError(f"Pre-verified record failed on line {line_no}")
+                if rec.get("public_key_sha256") != pinned_sha:
+                    raise ValueError(f"Public key hash mismatch on line {line_no}")
+                if require_zdr and rec.get("zdr_enforced") is not True:
+                    raise ValueError(f"Captured receipt failed ZDR check on line {line_no}")
+                if require_zero_cost and (rec.get("cost_usd") is None or float(rec["cost_usd"]) != 0.0):
+                    raise ValueError(f"Captured receipt failed zero-cost check on line {line_no}")
+                res = {
+                    k: rec.get(k)
+                    for k in (
+                        "ok",
+                        "verdict",
+                        "crypto_backend",
+                        "seq",
+                        "schema",
+                        "model_requested",
+                        "strict_free_only",
+                        "cost_usd",
+                        "zdr_enforced",
+                        "payload_sha256",
+                        "response_sha256",
+                        "public_key_sha256",
+                    )
+                }
+            verified_count += 1
+            records.append(res)
+
+    return {
+        "source": "live_benchmark_proxy_capture",
+        "model_probed": records[0].get("model_requested") if records else None,
+        "probe_count": total_count,
+        "verified_count": verified_count,
+        "pass_rate": round(verified_count / total_count, 4) if total_count > 0 else 0.0,
+        "public_key_sha256": pinned_sha,
+        "semantic_scope": (
+            "Cryptographic non-repudiation of server-attested payload integrity over captured benchmark calls; "
+            "not independent verification of remote RAM deletion or upstream billing."
+        ),
+        "receipts": records,
     }
 
 
@@ -205,6 +291,8 @@ def run_live_probes(
     pinned_pem: str,
     byt_api_key: str = "",
     byt_provider: str = "auto",
+    require_zdr: bool = False,
+    require_zero_cost: bool = False,
 ) -> Dict[str, Any]:
     endpoint = base_url.rstrip("/") + "/chat/completions"
     records: List[Dict[str, Any]] = []
@@ -238,16 +326,26 @@ def run_live_probes(
         with urllib.request.urlopen(req, timeout=150) as resp:
             raw = resp.read().decode("utf-8")
         obj = json.loads(raw)
-        ver = verify_receipt(obj, pinned_pub_pem=pinned_pem)
+        ver = verify_receipt(
+            obj,
+            pinned_pub_pem=pinned_pem,
+            require_zdr=require_zdr,
+            require_zero_cost=require_zero_cost,
+        )
         verified_count += 1
         records.append(ver)
 
     return {
+        "source": "live_probes",
         "model_probed": model,
         "probe_count": count,
         "verified_count": verified_count,
         "pass_rate": 1.0 if count > 0 and verified_count == count else 0.0,
         "public_key_sha256": sha256_hex(pinned_pem.strip().encode("utf-8")),
+        "semantic_scope": (
+            "Cryptographic non-repudiation of server-attested payload integrity; "
+            "not independent verification of remote RAM deletion or upstream billing."
+        ),
         "receipts": records,
     }
 
@@ -255,16 +353,33 @@ def run_live_probes(
 def main() -> int:
     parser = argparse.ArgumentParser(description="Verify offline Ed25519 cryptographic receipts")
     parser.add_argument("--response", default=None, help="Path to single OpenAI JSON response file, or '-' for stdin")
+    parser.add_argument("--jsonl-in", default=None, help="Path to JSONL file of captured benchmark receipts")
     parser.add_argument("--public-key", required=True, help="Pinned Ed25519 SPKI PEM file path")
     parser.add_argument("--response-text", default=None, help="Optional explicit response text override")
     parser.add_argument("--live-probe-count", type=int, default=0, help="Run N live audit probes via BIG4_BASE_URL/BIG4_API_KEY")
     parser.add_argument("--model", default="big4-ciclo5-free", help="Model ID for live probe mode")
     parser.add_argument("--byt-api-key", default="", help="Optional ephemeral BYT provider API key")
     parser.add_argument("--byt-provider", default="auto", help="Optional BYT provider name")
+    parser.add_argument("--require-zdr", action="store_true", help="Fail unless payload.zdr_enforced is True")
+    parser.add_argument("--require-zero-cost", action="store_true", help="Fail unless payload.cost_usd == 0.0")
     parser.add_argument("--out", default=None, help="Optional path to write JSON audit report")
     args = parser.parse_args()
 
     pinned_pem = load_public_key_pem(args.public_key)
+
+    if args.jsonl_in:
+        report = verify_jsonl_records(
+            args.jsonl_in,
+            pinned_pem,
+            require_zdr=args.require_zdr,
+            require_zero_cost=args.require_zero_cost,
+        )
+        rendered = json.dumps(report, indent=2, ensure_ascii=False)
+        if args.out:
+            with open(args.out, "w", encoding="utf-8") as fh:
+                fh.write(rendered + "\n")
+        print(rendered)
+        return 0 if report["probe_count"] > 0 and report["verified_count"] == report["probe_count"] else 1
 
     if args.live_probe_count > 0:
         base_url = os.environ.get("BIG4_BASE_URL", "").strip()
@@ -282,6 +397,8 @@ def main() -> int:
             pinned_pem,
             byt_api_key=byt_key,
             byt_provider=byt_prov,
+            require_zdr=args.require_zdr,
+            require_zero_cost=args.require_zero_cost,
         )
         rendered = json.dumps(report, indent=2, ensure_ascii=False)
         if args.out:
@@ -296,10 +413,16 @@ def main() -> int:
         with open(args.response, "r", encoding="utf-8") as fh:
             resp_obj = json.loads(fh.read())
     else:
-        print("Provide --response or --live-probe-count", file=sys.stderr)
+        print("Provide --response, --jsonl-in, or --live-probe-count", file=sys.stderr)
         return 2
 
-    res = verify_receipt(resp_obj, pinned_pub_pem=pinned_pem, response_text_override=args.response_text)
+    res = verify_receipt(
+        resp_obj,
+        pinned_pub_pem=pinned_pem,
+        response_text_override=args.response_text,
+        require_zdr=args.require_zdr,
+        require_zero_cost=args.require_zero_cost,
+    )
     rendered = json.dumps(res, indent=2, ensure_ascii=False)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as fh:

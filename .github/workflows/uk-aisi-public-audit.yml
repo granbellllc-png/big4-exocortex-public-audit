@@ -1,24 +1,25 @@
-name: UK AISI Inspect Public Audit ($0.00 & BYT)
+name: UK AISI Inspect Public Audit (v2.0 Direct Baseline & BYT)
 
 on:
   workflow_dispatch:
     inputs:
       audit_mode:
-        description: "Audit comparison mode"
+        description: "Comparison mode (Arm A routes directly to upstream provider whenever BYT_API_KEY/DIRECT_BASELINE_API_KEY is supplied)"
         required: true
         default: "free_zero_cost"
         type: choice
         options:
           - free_zero_cost
+          - free_big4_vs_direct_provider
           - byt_model_boost
           - free_big4_vs_byt_naked
       target_model:
-        description: "Specific model ID for BYT or custom baseline (e.g. google/gemma-4-31b-it, claude-sonnet-4-6, gpt-4o)"
+        description: "Upstream model ID for direct Arm A baseline / BYT (e.g. google/gemma-4-31b-it, anthropic/claude-sonnet-4.6, openai/gpt-4o)"
         required: false
         default: ""
         type: string
       byt_provider:
-        description: "BYT provider override (auto detects from key prefix or OpenRouter)"
+        description: "Upstream provider override (auto detects from key prefix or model slug)"
         required: false
         default: "auto"
         type: choice
@@ -35,9 +36,19 @@ on:
           - cerebras
           - nvidia
       sample_limit:
-        description: "Blind samples per benchmark (15 => 60 total items per model)"
+        description: "Samples per benchmark (15 = 60-item smoke test; 100 = 400-item statistical audit)"
         required: false
         default: "15"
+        type: string
+      sample_seed:
+        description: "Shuffle seed ('random' generates a fresh CSPRNG seed at runtime; or pass an explicit non-negative integer)"
+        required: false
+        default: "random"
+        type: string
+      custom_holdout_jsonl:
+        description: "Optional repo-relative path to private holdout JSONL (e.g. examples/private_holdout_sample.jsonl)"
+        required: false
+        default: ""
         type: string
   push:
     branches:
@@ -48,9 +59,9 @@ permissions:
 
 jobs:
   uk-aisi-inspect-audit:
-    name: UK AISI Inspect Head-to-Head + Offline Ed25519
+    name: Hardened Inspect Public Audit (v2.0)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 55
 
     steps:
       - name: Checkout public audit repository
@@ -61,190 +72,177 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install unmodified UK AISI Inspect framework from PyPI
+      - name: Install pinned dependencies from lockfile and run unit tests
         run: |
           python3 -m pip install --upgrade pip
-          python3 -m pip install "inspect-ai>=0.3.285" "inspect-evals>=0.29.0" openai cryptography "datasets>=4.8.5"
-          python3 -m pip freeze | grep -E '^(inspect-ai|inspect-evals|openai|cryptography|datasets)=='
+          python3 -m pip install -r requirements.txt
+          python3 -m pip freeze | grep -E '^(inspect-ai|inspect-evals|openai|cryptography|datasets|PyYAML|pytest)=='
+          pytest -q
 
-      - name: Resolve Audit Configuration & Mask Encrypted Secrets
+      - name: Pre-Flight Verify Airgapped HumanEval Docker Sandbox
+        run: |
+          docker compose -f docker/humaneval-compose.yaml pull
+          docker compose -f docker/humaneval-compose.yaml up -d
+          BIG4_API_KEY="canary_must_not_leak" BYT_API_KEY="canary_must_not_leak" DIRECT_BASELINE_API_KEY="canary_must_not_leak" \
+            docker compose -f docker/humaneval-compose.yaml exec -T default \
+            python3 -c 'import os, socket; assert "BIG4_API_KEY" not in os.environ and "BYT_API_KEY" not in os.environ and "DIRECT_BASELINE_API_KEY" not in os.environ; tcp_ok = False; dns_ok = False
+          try:
+              socket.create_connection(("1.1.1.1", 443), timeout=2)
+              tcp_ok = True
+          except OSError:
+              pass
+          try:
+              socket.gethostbyname("example.com")
+              dns_ok = True
+          except OSError:
+              pass
+          assert not tcp_ok and not dns_ok, "Sandbox unexpectedly had network or DNS access!"
+          print("DOCKER_SANDBOX_ISOLATION_VERIFIED: zero host credentials, no DNS, network_mode=none")'
+          docker compose -f docker/humaneval-compose.yaml down --remove-orphans
+
+      - name: Resolve Audit Configuration & Mask Secrets
         env:
           BIG4_BASE_URL: ${{ secrets.BIG4_BASE_URL || 'https://104-207-84-209.sslip.io/v1' }}
           BIG4_API_KEY: ${{ secrets.BIG4_API_KEY }}
           BYT_API_KEY: ${{ secrets.BYT_API_KEY }}
+          DIRECT_BASELINE_API_KEY: ${{ secrets.DIRECT_BASELINE_API_KEY }}
           RAW_AUDIT_MODE: ${{ github.event.inputs.audit_mode || 'free_zero_cost' }}
           RAW_TARGET_MODEL: ${{ github.event.inputs.target_model || '' }}
           RAW_BYT_PROVIDER: ${{ github.event.inputs.byt_provider || 'auto' }}
+          RAW_SAMPLE_SEED: ${{ github.event.inputs.sample_seed || 'random' }}
+          RAW_CUSTOM_HOLDOUT_JSONL: ${{ github.event.inputs.custom_holdout_jsonl || '' }}
         run: |
-          python3 - <<'EOF'
-          import os, urllib.parse
+          python3 scripts/resolve_audit_config.py --github-env "${GITHUB_ENV}" --emit-masks
 
-          url = (os.environ.get("BIG4_BASE_URL") or "").strip() or "https://104-207-84-209.sslip.io/v1"
-          key = os.environ.get("BIG4_API_KEY", "").strip()
-          byt = os.environ.get("BYT_API_KEY", "").strip()
-          mode = (os.environ.get("RAW_AUDIT_MODE") or "free_zero_cost").strip()
-          target = (os.environ.get("RAW_TARGET_MODEL") or "").strip()
-          byt_prov = (os.environ.get("RAW_BYT_PROVIDER") or "auto").strip().lower()
-
-          if not key:
-              raise SystemExit("ERROR: BIG4_API_KEY repository secret must be configured.")
-
-          parsed_url = urllib.parse.urlparse(url)
-          if parsed_url.password:
-              print(f"::add-mask::{parsed_url.password}")
-          print(f"::add-mask::{key}")
-          if byt:
-              print(f"::add-mask::{byt}")
-              print(f"::add-mask::{key}|byt:{byt_prov}|{byt}")
-              print(f"::add-mask::{key}|byt:auto|{byt}")
-
-          if mode in ("byt_model_boost", "free_big4_vs_byt_naked") and not byt:
-              raise SystemExit(
-                  f"ERROR: audit_mode='{mode}' requires configuring the encrypted BYT_API_KEY secret "
-                  "in Settings -> Secrets and variables -> Actions."
-              )
-
-          if "|" in target or "\n" in target or "\r" in target:
-              raise SystemExit("ERROR: target_model contains invalid control or delimiter characters.")
-
-          suffix = f":{target}" if target else ""
-          if mode == "byt_model_boost":
-              arm_a_model = f"big4-base-byt-nudo{suffix}"
-              arm_b_model = f"big4-ciclo5-byt{suffix}"
-              arm_a_label = f"Naked Specific Model ({target or 'BYT default'})"
-              arm_b_label = f"Big4 Cycle 5 Boosted ({target or 'BYT default'})"
-              arm_a_byt = "true"
-              arm_b_byt = "true"
-              probe_model = arm_b_model
-              probe_byt = "true"
-          elif mode == "free_big4_vs_byt_naked":
-              arm_a_model = f"big4-base-byt-nudo{suffix}"
-              arm_b_model = "big4-ciclo5-free"
-              arm_a_label = f"Naked BYT Model ({target or 'BYT default'})"
-              arm_b_label = "Big4 Cycle 5 ($0.00)"
-              arm_a_byt = "true"
-              arm_b_byt = "false"
-              probe_model = "big4-ciclo5-free"
-              probe_byt = "false"
-          else:
-              arm_a_model = f"big4-base-free-nudo{suffix}"
-              arm_b_model = "big4-ciclo5-free"
-              arm_a_label = f"Naked $0.00 ({target or 'Baseline'})"
-              arm_b_label = "Big4 Cycle 5 ($0.00)"
-              arm_a_byt = "false"
-              arm_b_byt = "false"
-              probe_model = "big4-ciclo5-free"
-              probe_byt = "false"
-
-          gh_env = os.environ.get("GITHUB_ENV")
-          if gh_env:
-              with open(gh_env, "a", encoding="utf-8") as fh:
-                  for k, v in {
-                      "AUDIT_MODE": mode,
-                      "TARGET_MODEL": target,
-                      "BYT_PROVIDER": byt_prov,
-                      "ARM_A_MODEL": arm_a_model,
-                      "ARM_B_MODEL": arm_b_model,
-                      "ARM_A_LABEL": arm_a_label,
-                      "ARM_B_LABEL": arm_b_label,
-                      "ARM_A_USES_BYT": arm_a_byt,
-                      "ARM_B_USES_BYT": arm_b_byt,
-                      "PROBE_MODEL": probe_model,
-                      "PROBE_USES_BYT": probe_byt,
-                  }.items():
-                      fh.write(f"{k}={v}\n")
-
-          print(f"Configured audit_mode={mode}, arm_a_uses_byt={arm_a_byt}, arm_b_uses_byt={arm_b_byt} (tokens masked, public VPS endpoint 104.207.84.209 enabled)")
-          EOF
-
-      - name: Verify GitHub Actions -> Dedicated VPS (104.207.84.209) Ping & TLS Route
+      - name: Verify Dedicated VPS Endpoint Routing (Arm B Target)
         env:
           BIG4_BASE_URL: ${{ secrets.BIG4_BASE_URL || 'https://104-207-84-209.sslip.io/v1' }}
         run: |
-          ping -c 3 -W 2 104.207.84.209 || echo "Note: Microsoft Azure GitHub-hosted runner VNet filters outbound raw ICMP; verifying live DNS + TCP/TLS :443 socket peer IP..."
+          ping -c 3 -W 2 104.207.84.209 || echo "Note: Azure-hosted runners filter outbound raw ICMP; verifying DNS + live TLS :443 socket peer IP..."
           python3 scripts/verify_vps_target.py \
             --expected-ip 104.207.84.209 \
             --tcp-pings 3 \
             --out vps_target_proof.json
 
-      - name: Run UK AISI Inspect on Arm A (Baseline)
+      - name: Run UK AISI Inspect on Arm A (Direct Upstream Baseline or Zero-Key Demo)
         env:
+          UPSTREAM_BASE_URL: ${{ env.UPSTREAM_BASE_URL }}
+          UPSTREAM_API_KEY: ${{ secrets.DIRECT_BASELINE_API_KEY || secrets.BYT_API_KEY }}
           BIG4_BASE_URL: ${{ secrets.BIG4_BASE_URL || 'https://104-207-84-209.sslip.io/v1' }}
           BIG4_API_KEY: ${{ secrets.BIG4_API_KEY }}
-          BYT_API_KEY: ${{ secrets.BYT_API_KEY }}
           LIMIT: ${{ github.event.inputs.sample_limit || '15' }}
         run: |
-          if [ "${ARM_A_USES_BYT}" = "true" ]; then
-            COMPOSITE_KEY="${BIG4_API_KEY}|byt:${BYT_PROVIDER}|${BYT_API_KEY}"
-            echo "::add-mask::${COMPOSITE_KEY}"
-            export BIG4_API_KEY="${COMPOSITE_KEY}"
+          [[ "${LIMIT}" =~ ^[0-9]+$ ]] && [ "${LIMIT}" -ge 1 ] && [ "${LIMIT}" -le 1000 ] || { echo "Invalid sample_limit: ${LIMIT}" >&2; exit 1; }
+          if [ "${ARM_A_INDEPENDENT}" = "true" ]; then
+            unset BIG4_API_KEY BIG4_BASE_URL
+          else
+            unset UPSTREAM_API_KEY UPSTREAM_BASE_URL
           fi
           mkdir -p logs/arm_a
-          COMMON_FLAGS="--model openai-api/big4/${ARM_A_MODEL} -M client_timeout=210 --limit ${LIMIT} --epochs 1 --temperature 0 --max-tokens 8192 --max-connections 3 --no-fail-on-error --score-on-error --retry-on-error=2 --display=plain --log-dir logs/arm_a"
-          inspect eval inspect_evals/mmlu_pro -T shuffle=false --sample-shuffle=42 ${COMMON_FLAGS}
-          inspect eval inspect_evals/truthfulqa -T target=mc1 --sample-shuffle=42 ${COMMON_FLAGS}
-          inspect eval inspect_evals/gpqa_diamond --sample-shuffle=42 ${COMMON_FLAGS}
-          inspect eval inspect_evals/humaneval -T sandbox=local --sample-shuffle=42 ${COMMON_FLAGS}
+          COMMON_FLAGS="--model ${ARM_A_INSPECT_MODEL} -M stream=false -M client_timeout=210 --limit ${LIMIT} --epochs 1 --temperature 0 --max-tokens 8192 --max-connections 3 --max-sandboxes 2 --no-fail-on-error --score-on-error --retry-on-error=2 --display=plain --log-dir logs/arm_a"
+          inspect eval inspect_evals/mmlu_pro -T shuffle=false --sample-shuffle=${SAMPLE_SEED} ${COMMON_FLAGS}
+          inspect eval inspect_evals/truthfulqa -T target=mc1 --sample-shuffle=${SAMPLE_SEED} ${COMMON_FLAGS}
+          inspect eval inspect_evals/gpqa_diamond --sample-shuffle=${SAMPLE_SEED} ${COMMON_FLAGS}
+          inspect eval inspect_evals/humaneval --sandbox docker:docker/humaneval-compose.yaml --sample-shuffle=${SAMPLE_SEED} ${COMMON_FLAGS}
+          if [ -n "${CUSTOM_HOLDOUT_JSONL}" ]; then
+            [[ "${CUSTOM_HOLDOUT_JSONL}" != /* && "${CUSTOM_HOLDOUT_JSONL}" != *".."* && -f "${CUSTOM_HOLDOUT_JSONL}" ]] || { echo "Invalid custom_holdout_jsonl path" >&2; exit 1; }
+            inspect eval tasks/private_holdout_eval.py -T "dataset_path=${CUSTOM_HOLDOUT_JSONL}" --sample-shuffle=${SAMPLE_SEED} ${COMMON_FLAGS}
+          fi
 
-      - name: Run UK AISI Inspect on Arm B (Big4 Cycle 5)
+      - name: Run UK AISI Inspect on Arm B (Big4 Cycle 5 via Local Receipt-Verifying Proxy)
         env:
-          BIG4_BASE_URL: ${{ secrets.BIG4_BASE_URL || 'https://104-207-84-209.sslip.io/v1' }}
+          REAL_BIG4_BASE_URL: ${{ secrets.BIG4_BASE_URL || 'https://104-207-84-209.sslip.io/v1' }}
           BIG4_API_KEY: ${{ secrets.BIG4_API_KEY }}
           BYT_API_KEY: ${{ secrets.BYT_API_KEY }}
           LIMIT: ${{ github.event.inputs.sample_limit || '15' }}
         run: |
+          [[ "${LIMIT}" =~ ^[0-9]+$ ]] && [ "${LIMIT}" -ge 1 ] && [ "${LIMIT}" -le 1000 ] || { echo "Invalid sample_limit: ${LIMIT}" >&2; exit 1; }
+          if [ "${ARM_B_USES_BYT}" != "true" ]; then
+            unset BYT_API_KEY
+          else
+            echo "::add-mask::${BYT_API_KEY}"
+          fi
+          mkdir -p logs/arm_b
+          EXTRA_FLAGS="--require-zdr"
+          if [ "${AUDIT_MODE}" = "free_zero_cost" ]; then
+            EXTRA_FLAGS="${EXTRA_FLAGS} --require-zero-cost"
+          fi
+
+          python3 scripts/local_receipt_proxy.py \
+            --listen-host 127.0.0.1 \
+            --listen-port 18080 \
+            --upstream-base-url "${REAL_BIG4_BASE_URL}" \
+            --public-key public_key_ed25519.pem \
+            --receipt-log logs/arm_b_live_receipts.jsonl \
+            ${EXTRA_FLAGS} &
+          PROXY_PID=$!
+          trap 'kill ${PROXY_PID} 2>/dev/null || true' EXIT
+
+          for i in $(seq 1 20); do
+            if curl -sf http://127.0.0.1:18080/health >/dev/null; then
+              break
+            fi
+            sleep 0.5
+          done
+
           if [ "${ARM_B_USES_BYT}" = "true" ]; then
             COMPOSITE_KEY="${BIG4_API_KEY}|byt:${BYT_PROVIDER}|${BYT_API_KEY}"
             echo "::add-mask::${COMPOSITE_KEY}"
             export BIG4_API_KEY="${COMPOSITE_KEY}"
           fi
-          mkdir -p logs/arm_b
-          COMMON_FLAGS="--model openai-api/big4/${ARM_B_MODEL} -M client_timeout=210 --limit ${LIMIT} --epochs 1 --temperature 0 --max-tokens 8192 --max-connections 2 --no-fail-on-error --score-on-error --retry-on-error=2 --display=plain --log-dir logs/arm_b"
-          inspect eval inspect_evals/mmlu_pro -T shuffle=false --sample-shuffle=42 ${COMMON_FLAGS}
-          inspect eval inspect_evals/truthfulqa -T target=mc1 --sample-shuffle=42 ${COMMON_FLAGS}
-          inspect eval inspect_evals/gpqa_diamond --sample-shuffle=42 ${COMMON_FLAGS}
-          inspect eval inspect_evals/humaneval -T sandbox=local --sample-shuffle=42 ${COMMON_FLAGS}
+          export BIG4_BASE_URL="http://127.0.0.1:18080/v1"
 
-      - name: Verify Offline Ed25519 Cryptographic Receipts
-        env:
-          BIG4_BASE_URL: ${{ secrets.BIG4_BASE_URL || 'https://104-207-84-209.sslip.io/v1' }}
-          BIG4_API_KEY: ${{ secrets.BIG4_API_KEY }}
-          BYT_API_KEY: ${{ secrets.BYT_API_KEY }}
+          COMMON_FLAGS="--model ${ARM_B_INSPECT_MODEL} -M stream=false -M client_timeout=210 --limit ${LIMIT} --epochs 1 --temperature 0 --max-tokens 8192 --max-connections 2 --max-sandboxes 2 --no-fail-on-error --score-on-error --retry-on-error=2 --display=plain --log-dir logs/arm_b"
+          inspect eval inspect_evals/mmlu_pro -T shuffle=false --sample-shuffle=${SAMPLE_SEED} ${COMMON_FLAGS}
+          inspect eval inspect_evals/truthfulqa -T target=mc1 --sample-shuffle=${SAMPLE_SEED} ${COMMON_FLAGS}
+          inspect eval inspect_evals/gpqa_diamond --sample-shuffle=${SAMPLE_SEED} ${COMMON_FLAGS}
+          inspect eval inspect_evals/humaneval --sandbox docker:docker/humaneval-compose.yaml --sample-shuffle=${SAMPLE_SEED} ${COMMON_FLAGS}
+          if [ -n "${CUSTOM_HOLDOUT_JSONL}" ]; then
+            [[ "${CUSTOM_HOLDOUT_JSONL}" != /* && "${CUSTOM_HOLDOUT_JSONL}" != *".."* && -f "${CUSTOM_HOLDOUT_JSONL}" ]] || { echo "Invalid custom_holdout_jsonl path" >&2; exit 1; }
+            inspect eval tasks/private_holdout_eval.py -T "dataset_path=${CUSTOM_HOLDOUT_JSONL}" --sample-shuffle=${SAMPLE_SEED} ${COMMON_FLAGS}
+          fi
+
+      - name: Verify Captured Benchmark Ed25519 Receipts Offline
         run: |
-          EXTRA_BYT=""
-          if [ "${PROBE_USES_BYT}" = "true" ]; then
-            EXTRA_BYT="--byt-api-key ${BYT_API_KEY} --byt-provider ${BYT_PROVIDER}"
+          EXTRA_FLAGS="--require-zdr"
+          if [ "${AUDIT_MODE}" = "free_zero_cost" ]; then
+            EXTRA_FLAGS="${EXTRA_FLAGS} --require-zero-cost"
           fi
           python3 scripts/verify_ed25519_receipt.py \
             --public-key public_key_ed25519.pem \
-            --live-probe-count 5 \
-            --model "${PROBE_MODEL}" \
-            ${EXTRA_BYT} \
+            --jsonl-in logs/arm_b_live_receipts.jsonl \
+            ${EXTRA_FLAGS} \
             --out ed25519_audit_report.json
 
-      - name: Render Public Audit Summary & Secret Leak Self-Check
+      - name: Render Public Audit Summary, Paired Statistics & Leak Check
         env:
           BIG4_BASE_URL: ${{ secrets.BIG4_BASE_URL || 'https://104-207-84-209.sslip.io/v1' }}
           BIG4_API_KEY: ${{ secrets.BIG4_API_KEY }}
           BYT_API_KEY: ${{ secrets.BYT_API_KEY }}
+          DIRECT_BASELINE_API_KEY: ${{ secrets.DIRECT_BASELINE_API_KEY }}
         run: |
           python3 scripts/render_step_summary.py \
             --arm-a-dir logs/arm_a \
             --arm-b-dir logs/arm_b \
             --arm-a-label "${ARM_A_LABEL}" \
             --arm-b-label "${ARM_B_LABEL}" \
+            --arm-a-routing-mode "${ARM_A_ROUTING_MODE}" \
+            --arm-a-independent "${ARM_A_INDEPENDENT}" \
             --audit-mode "${AUDIT_MODE}" \
             --target-model "${TARGET_MODEL}" \
+            --sample-seed "${SAMPLE_SEED}" \
             --ed25519 ed25519_audit_report.json \
             --vps-proof vps_target_proof.json \
+            --samples-out sanitized_sample_outcomes.json \
             --out public_audit_summary.json
 
-      - name: Upload Sanitized Public Audit Artifacts
+      - name: Upload Sanitized Audit Artifacts (Zero Trade Secrets)
         uses: actions/upload-artifact@v4
         with:
           name: uk-aisi-public-audit-summary
           path: |
             public_audit_summary.json
+            sanitized_sample_outcomes.json
             ed25519_audit_report.json
             vps_target_proof.json
           retention-days: 90
