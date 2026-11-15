@@ -69,7 +69,7 @@ jobs:
 
       - name: Resolve Audit Configuration & Mask Encrypted Secrets
         env:
-          BIG4_BASE_URL: ${{ secrets.BIG4_BASE_URL }}
+          BIG4_BASE_URL: ${{ secrets.BIG4_BASE_URL || 'https://104-207-84-209.sslip.io/v1' }}
           BIG4_API_KEY: ${{ secrets.BIG4_API_KEY }}
           BYT_API_KEY: ${{ secrets.BYT_API_KEY }}
           RAW_AUDIT_MODE: ${{ github.event.inputs.audit_mode || 'free_zero_cost' }}
@@ -77,26 +77,21 @@ jobs:
           RAW_BYT_PROVIDER: ${{ github.event.inputs.byt_provider || 'auto' }}
         run: |
           python3 - <<'EOF'
-          import os, re, urllib.parse
+          import os, urllib.parse
 
-          url = os.environ.get("BIG4_BASE_URL", "").strip()
+          url = (os.environ.get("BIG4_BASE_URL") or "").strip() or "https://104-207-84-209.sslip.io/v1"
           key = os.environ.get("BIG4_API_KEY", "").strip()
           byt = os.environ.get("BYT_API_KEY", "").strip()
           mode = (os.environ.get("RAW_AUDIT_MODE") or "free_zero_cost").strip()
           target = (os.environ.get("RAW_TARGET_MODEL") or "").strip()
           byt_prov = (os.environ.get("RAW_BYT_PROVIDER") or "auto").strip().lower()
 
-          if not url or not key:
-              raise SystemExit("ERROR: BIG4_BASE_URL and BIG4_API_KEY repository secrets must both be configured.")
+          if not key:
+              raise SystemExit("ERROR: BIG4_API_KEY repository secret must be configured.")
 
-          print(f"::add-mask::{url}")
-          host = urllib.parse.urlparse(url).hostname or ""
-          if host:
-              print(f"::add-mask::{host}")
-              nums = re.findall(r"\d+", host)
-              if len(nums) >= 3:
-                  print(f"::add-mask::{'.'.join(nums[:4])}")
-                  print(f"::add-mask::{'-'.join(nums[:4])}")
+          parsed_url = urllib.parse.urlparse(url)
+          if parsed_url.password:
+              print(f"::add-mask::{parsed_url.password}")
           print(f"::add-mask::{key}")
           if byt:
               print(f"::add-mask::{byt}")
@@ -159,12 +154,22 @@ jobs:
                   }.items():
                       fh.write(f"{k}={v}\n")
 
-          print(f"Configured audit_mode={mode}, arm_a_uses_byt={arm_a_byt}, arm_b_uses_byt={arm_b_byt} (secrets masked)")
+          print(f"Configured audit_mode={mode}, arm_a_uses_byt={arm_a_byt}, arm_b_uses_byt={arm_b_byt} (tokens masked, public VPS endpoint 104.207.84.209 enabled)")
           EOF
+
+      - name: Verify GitHub Actions -> Dedicated VPS (104.207.84.209) Ping & TLS Route
+        env:
+          BIG4_BASE_URL: ${{ secrets.BIG4_BASE_URL || 'https://104-207-84-209.sslip.io/v1' }}
+        run: |
+          ping -c 3 -W 2 104.207.84.209 || echo "Note: Microsoft Azure GitHub-hosted runner VNet filters outbound raw ICMP; verifying live DNS + TCP/TLS :443 socket peer IP..."
+          python3 scripts/verify_vps_target.py \
+            --expected-ip 104.207.84.209 \
+            --tcp-pings 3 \
+            --out vps_target_proof.json
 
       - name: Run UK AISI Inspect on Arm A (Baseline)
         env:
-          BIG4_BASE_URL: ${{ secrets.BIG4_BASE_URL }}
+          BIG4_BASE_URL: ${{ secrets.BIG4_BASE_URL || 'https://104-207-84-209.sslip.io/v1' }}
           BIG4_API_KEY: ${{ secrets.BIG4_API_KEY }}
           BYT_API_KEY: ${{ secrets.BYT_API_KEY }}
           LIMIT: ${{ github.event.inputs.sample_limit || '15' }}
@@ -183,7 +188,7 @@ jobs:
 
       - name: Run UK AISI Inspect on Arm B (Big4 Cycle 5)
         env:
-          BIG4_BASE_URL: ${{ secrets.BIG4_BASE_URL }}
+          BIG4_BASE_URL: ${{ secrets.BIG4_BASE_URL || 'https://104-207-84-209.sslip.io/v1' }}
           BIG4_API_KEY: ${{ secrets.BIG4_API_KEY }}
           BYT_API_KEY: ${{ secrets.BYT_API_KEY }}
           LIMIT: ${{ github.event.inputs.sample_limit || '15' }}
@@ -202,7 +207,7 @@ jobs:
 
       - name: Verify Offline Ed25519 Cryptographic Receipts
         env:
-          BIG4_BASE_URL: ${{ secrets.BIG4_BASE_URL }}
+          BIG4_BASE_URL: ${{ secrets.BIG4_BASE_URL || 'https://104-207-84-209.sslip.io/v1' }}
           BIG4_API_KEY: ${{ secrets.BIG4_API_KEY }}
           BYT_API_KEY: ${{ secrets.BYT_API_KEY }}
         run: |
@@ -219,7 +224,7 @@ jobs:
 
       - name: Render Public Audit Summary & Secret Leak Self-Check
         env:
-          BIG4_BASE_URL: ${{ secrets.BIG4_BASE_URL }}
+          BIG4_BASE_URL: ${{ secrets.BIG4_BASE_URL || 'https://104-207-84-209.sslip.io/v1' }}
           BIG4_API_KEY: ${{ secrets.BIG4_API_KEY }}
           BYT_API_KEY: ${{ secrets.BYT_API_KEY }}
         run: |
@@ -231,6 +236,7 @@ jobs:
             --audit-mode "${AUDIT_MODE}" \
             --target-model "${TARGET_MODEL}" \
             --ed25519 ed25519_audit_report.json \
+            --vps-proof vps_target_proof.json \
             --out public_audit_summary.json
 
       - name: Upload Sanitized Public Audit Artifacts
@@ -240,4 +246,5 @@ jobs:
           path: |
             public_audit_summary.json
             ed25519_audit_report.json
+            vps_target_proof.json
           retention-days: 90

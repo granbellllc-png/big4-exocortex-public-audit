@@ -72,29 +72,38 @@ def extract_task_rows(log_dir: str) -> List[Dict[str, Any]]:
 
 
 def check_no_secret_leak(payload_text: str) -> None:
-    forbidden_literals: List[str] = []
+    forbidden_literals: List[str] = ["|byt:"]
     base_url = os.environ.get("BIG4_BASE_URL", "").strip()
     api_key = os.environ.get("BIG4_API_KEY", "").strip()
     byt_key = os.environ.get("BYT_API_KEY", "").strip()
     if base_url:
-        forbidden_literals.append(base_url)
-        host = urllib.parse.urlparse(base_url).hostname or ""
-        if host:
-            forbidden_literals.append(host)
-            m = re.findall(r"\d+", host)
-            if len(m) >= 3:
-                forbidden_literals.append(".".join(m[:4]))
-                forbidden_literals.append("-".join(m[:4]))
+        parsed_url = urllib.parse.urlparse(base_url)
+        if parsed_url.password:
+            forbidden_literals.append(parsed_url.password)
     for secret_val in (api_key, byt_key):
         if secret_val and len(secret_val) >= 12:
             forbidden_literals.append(secret_val)
+            forbidden_literals.append(secret_val[:12])
             forbidden_literals.append(secret_val[:16])
 
     for lit in forbidden_literals:
         if lit and lit in payload_text:
-            raise RuntimeError(f"Secret/host leakage detected in public output ({len(lit)} chars)")
+            raise RuntimeError(f"Secret leakage detected in public output ({len(lit)} chars)")
 
-    if re.search(r"https?://(?!github\.com|ukgovernmentbeis\.github\.io)", payload_text, re.I):
+    if re.search(
+        r"(?:sk-big4-|sk-or-v1-|sk-ant-|gsk_|AIza[0-9A-Za-z_-]{10,}|ghp_[0-9A-Za-z]{20,}|github_pat_[0-9A-Za-z_]{20,})",
+        payload_text,
+    ):
+        raise RuntimeError("Credential token prefix detected in sanitized public summary")
+
+    if re.search(r"https?://[^/\s@]+:[^/\s@]+@", payload_text):
+        raise RuntimeError("URL userinfo credential detected in sanitized public summary")
+
+    if re.search(
+        r"https?://(?!github\.com|ukgovernmentbeis\.github\.io|104-207-84-209\.sslip\.io|104\.207\.84\.209)",
+        payload_text,
+        re.I,
+    ):
         raise RuntimeError("Unexpected external URL detected in sanitized public summary")
 
 
@@ -107,6 +116,7 @@ def main() -> int:
     parser.add_argument("--audit-mode", default="free_zero_cost")
     parser.add_argument("--target-model", default="")
     parser.add_argument("--ed25519", required=True)
+    parser.add_argument("--vps-proof", default="", help="Optional JSON report produced by scripts/verify_vps_target.py")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
 
@@ -114,6 +124,12 @@ def main() -> int:
     big4_rows = extract_task_rows(args.arm_b_dir)
     with open(args.ed25519, "r", encoding="utf-8") as fh:
         ed_report = json.load(fh)
+
+    vps_proof: Optional[Dict[str, Any]] = None
+    vps_proof_path = (args.vps_proof or "").strip()
+    if vps_proof_path and os.path.isfile(vps_proof_path):
+        with open(vps_proof_path, "r", encoding="utf-8") as fh:
+            vps_proof = json.load(fh)
 
     by_task_naked = {r["task"]: r for r in naked_rows}
     by_task_big4 = {r["task"]: r for r in big4_rows}
@@ -164,6 +180,7 @@ def main() -> int:
             "probe_count": ed_report.get("probe_count", 0),
             "public_key_sha256": ed_report.get("public_key_sha256"),
         },
+        "vps_target_verification": vps_proof,
     }
 
     target_banner = f" | Target Model: `{args.target_model}`" if args.target_model else ""
@@ -186,12 +203,28 @@ def main() -> int:
         lines.append(f"| `{t}` | {n_str} | {b_str} | {dp:+.1f} pp | {c_str} |")
         summary["tasks"].append({"task": t, "naked": rn, "big4_cycle5": rb, "delta_pp": round(dp, 2)})
 
+    vps_line = None
+    if vps_proof:
+        vps_ip = vps_proof.get("expected_vps_ip", "104.207.84.209")
+        vps_port = vps_proof.get("target_port", 443)
+        vps_host = vps_proof.get("target_hostname", "104-207-84-209.sslip.io")
+        tls_ver = vps_proof.get("tls_version") or "TLS"
+        avg_ms = vps_proof.get("tcp_tls_ping_avg_ms")
+        avg_str = f"{avg_ms} ms" if avg_ms is not None else "N/A"
+        vps_status = "VERIFIED" if vps_proof.get("verified") else "UNVERIFIED"
+        vps_line = (
+            f"- **Dedicated VPS Hardware & Routing Proof:** GitHub runner resolved `{vps_host}` "
+            f"and connected over `{tls_ver}` directly to Dedicated IP `{vps_ip}:{vps_port}` "
+            f"(Namecheap VPS Quasar, avg TLS ping `{avg_str}`, status `{vps_status}`)."
+        )
+
     lines.extend(
         [
             f"| **OVERALL AGGREGATE** | **{naked_total_correct}/{naked_total_items} ({naked_pct:.1f}%)** | **{big4_total_correct}/{big4_total_items} ({big4_pct:.1f}%)** | **{delta_pp:+.1f} pp** | {billing_note} |",
             "",
             f"- **Offline Ed25519 Receipt Audit:** `{ed_report.get('verified_count', 0)}/{ed_report.get('probe_count', 0)}` cryptographically verified (`public_key_sha256`: `{ed_report.get('public_key_sha256')}`)",
-            "- **Server Endpoints & Proprietary Weights:** Zero server secrets, weights, routing tables, or host identifiers disclosed.",
+            *( [vps_line] if vps_line else [] ),
+            "- **Server Secrets & Proprietary Weights:** Zero server API keys, internal model weights, or proprietary routing source code disclosed.",
         ]
     )
 
