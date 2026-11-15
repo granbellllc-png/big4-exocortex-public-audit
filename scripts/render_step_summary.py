@@ -75,6 +75,7 @@ def check_no_secret_leak(payload_text: str) -> None:
     forbidden_literals: List[str] = []
     base_url = os.environ.get("BIG4_BASE_URL", "").strip()
     api_key = os.environ.get("BIG4_API_KEY", "").strip()
+    byt_key = os.environ.get("BYT_API_KEY", "").strip()
     if base_url:
         forbidden_literals.append(base_url)
         host = urllib.parse.urlparse(base_url).hostname or ""
@@ -84,9 +85,10 @@ def check_no_secret_leak(payload_text: str) -> None:
             if len(m) >= 3:
                 forbidden_literals.append(".".join(m[:4]))
                 forbidden_literals.append("-".join(m[:4]))
-    if api_key and len(api_key) >= 12:
-        forbidden_literals.append(api_key)
-        forbidden_literals.append(api_key[:16])
+    for secret_val in (api_key, byt_key):
+        if secret_val and len(secret_val) >= 12:
+            forbidden_literals.append(secret_val)
+            forbidden_literals.append(secret_val[:16])
 
     for lit in forbidden_literals:
         if lit and lit in payload_text:
@@ -98,14 +100,18 @@ def check_no_secret_leak(payload_text: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Render official UK AISI Inspect public audit summary")
-    parser.add_argument("--naked-dir", required=True)
-    parser.add_argument("--big4-dir", required=True)
+    parser.add_argument("--arm-a-dir", "--naked-dir", dest="arm_a_dir", required=True)
+    parser.add_argument("--arm-b-dir", "--big4-dir", dest="arm_b_dir", required=True)
+    parser.add_argument("--arm-a-label", default="Naked $0.00 Baseline")
+    parser.add_argument("--arm-b-label", default="Big4 Exocortex Cycle 5 $0.00")
+    parser.add_argument("--audit-mode", default="free_zero_cost")
+    parser.add_argument("--target-model", default="")
     parser.add_argument("--ed25519", required=True)
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
 
-    naked_rows = extract_task_rows(args.naked_dir)
-    big4_rows = extract_task_rows(args.big4_dir)
+    naked_rows = extract_task_rows(args.arm_a_dir)
+    big4_rows = extract_task_rows(args.arm_b_dir)
     with open(args.ed25519, "r", encoding="utf-8") as fh:
         ed_report = json.load(fh)
 
@@ -122,12 +128,29 @@ def main() -> int:
     big4_pct = (100.0 * big4_total_correct / big4_total_items) if big4_total_items > 0 else 0.0
     delta_pp = big4_pct - naked_pct
 
+    is_free_only = args.audit_mode == "free_zero_cost"
+    billing_note = (
+        "`$0.00` token cost"
+        if is_free_only
+        else ("BYT direct-provider key + `$0.00` Big4 Cycle 5 orchestrator" if args.audit_mode == "byt_model_boost" else "Arm A: BYT direct-provider key vs Arm B: `$0.00` Big4 Cycle 5")
+    )
+
     summary = {
         "framework": "UK AI Safety Institute Inspect (inspect-ai + inspect-evals)",
-        "cost_usd": 0.0,
+        "audit_mode": args.audit_mode,
+        "target_model": args.target_model or None,
+        "arm_a_label": args.arm_a_label,
+        "arm_b_label": args.arm_b_label,
+        "cost_usd": 0.0 if is_free_only else None,
         "zdr_enforced": True,
         "tasks": [],
         "aggregate": {
+            "arm_a_correct": naked_total_correct,
+            "arm_a_total": naked_total_items,
+            "arm_a_accuracy_pct": round(naked_pct, 2),
+            "arm_b_correct": big4_total_correct,
+            "arm_b_total": big4_total_items,
+            "arm_b_accuracy_pct": round(big4_pct, 2),
             "naked_correct": naked_total_correct,
             "naked_total": naked_total_items,
             "naked_accuracy_pct": round(naked_pct, 2),
@@ -143,10 +166,11 @@ def main() -> int:
         },
     }
 
+    target_banner = f" | Target Model: `{args.target_model}`" if args.target_model else ""
     lines = [
-        "## Zero-Trust Third-Party Audit — UK AI Safety Institute `Inspect` ($0.00)",
+        f"## Zero-Trust Third-Party Audit — UK AI Safety Institute `Inspect` (`{args.audit_mode}`{target_banner})",
         "",
-        "| Benchmark (`inspect_evals`) | Naked `$0.00` Baseline | Big4 Exocortex Cycle 5 `$0.00` | Delta (pp) | Completed (Naked / Big4) |",
+        f"| Benchmark (`inspect_evals`) | {args.arm_a_label} | {args.arm_b_label} | Delta (pp) | Completed (Arm A / Arm B) |",
         "| :--- | :---: | :---: | :---: | :---: |",
     ]
 
@@ -164,7 +188,7 @@ def main() -> int:
 
     lines.extend(
         [
-            f"| **OVERALL AGGREGATE** | **{naked_total_correct}/{naked_total_items} ({naked_pct:.1f}%)** | **{big4_total_correct}/{big4_total_items} ({big4_pct:.1f}%)** | **{delta_pp:+.1f} pp** | `$0.00` token cost |",
+            f"| **OVERALL AGGREGATE** | **{naked_total_correct}/{naked_total_items} ({naked_pct:.1f}%)** | **{big4_total_correct}/{big4_total_items} ({big4_pct:.1f}%)** | **{delta_pp:+.1f} pp** | {billing_note} |",
             "",
             f"- **Offline Ed25519 Receipt Audit:** `{ed_report.get('verified_count', 0)}/{ed_report.get('probe_count', 0)}` cryptographically verified (`public_key_sha256`: `{ed_report.get('public_key_sha256')}`)",
             "- **Server Endpoints & Proprietary Weights:** Zero server secrets, weights, routing tables, or host identifiers disclosed.",

@@ -203,6 +203,8 @@ def run_live_probes(
     model: str,
     count: int,
     pinned_pem: str,
+    byt_api_key: str = "",
+    byt_provider: str = "auto",
 ) -> Dict[str, Any]:
     endpoint = base_url.rstrip("/") + "/chat/completions"
     records: List[Dict[str, Any]] = []
@@ -218,15 +220,20 @@ def run_live_probes(
                 "max_tokens": 512,
             }
         ).encode("utf-8")
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        if byt_api_key:
+            headers["X-Big4-BYT-Provider-Key"] = byt_api_key
+            if byt_provider and byt_provider != "auto":
+                headers["X-Big4-BYT-Provider"] = byt_provider
         req = urllib.request.Request(
             endpoint,
             data=req_body,
             method="POST",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
+            headers=headers,
         )
         with urllib.request.urlopen(req, timeout=150) as resp:
             raw = resp.read().decode("utf-8")
@@ -252,6 +259,8 @@ def main() -> int:
     parser.add_argument("--response-text", default=None, help="Optional explicit response text override")
     parser.add_argument("--live-probe-count", type=int, default=0, help="Run N live audit probes via BIG4_BASE_URL/BIG4_API_KEY")
     parser.add_argument("--model", default="big4-ciclo5-free", help="Model ID for live probe mode")
+    parser.add_argument("--byt-api-key", default="", help="Optional ephemeral BYT provider API key")
+    parser.add_argument("--byt-provider", default="auto", help="Optional BYT provider name")
     parser.add_argument("--out", default=None, help="Optional path to write JSON audit report")
     args = parser.parse_args()
 
@@ -260,10 +269,20 @@ def main() -> int:
     if args.live_probe_count > 0:
         base_url = os.environ.get("BIG4_BASE_URL", "").strip()
         api_key = os.environ.get("BIG4_API_KEY", "").strip()
+        byt_key = (args.byt_api_key or os.environ.get("BYT_API_KEY", "")).strip()
+        byt_prov = (args.byt_provider or os.environ.get("BYT_PROVIDER", "auto")).strip()
         if not base_url or not api_key:
             print("Missing BIG4_BASE_URL or BIG4_API_KEY in environment", file=sys.stderr)
             return 2
-        report = run_live_probes(base_url, api_key, args.model, args.live_probe_count, pinned_pem)
+        report = run_live_probes(
+            base_url,
+            api_key,
+            args.model,
+            args.live_probe_count,
+            pinned_pem,
+            byt_api_key=byt_key,
+            byt_provider=byt_prov,
+        )
         rendered = json.dumps(report, indent=2, ensure_ascii=False)
         if args.out:
             with open(args.out, "w", encoding="utf-8") as fh:
