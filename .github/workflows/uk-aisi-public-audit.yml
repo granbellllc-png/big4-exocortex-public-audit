@@ -1,0 +1,117 @@
+name: UK AISI Inspect Public Audit ($0.00)
+
+on:
+  workflow_dispatch:
+    inputs:
+      sample_limit:
+        description: "Blind samples per benchmark (15 => 60 total items per model)"
+        required: false
+        default: "15"
+        type: string
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  uk-aisi-inspect-audit:
+    name: UK AISI Inspect Head-to-Head + Offline Ed25519
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout public audit repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install unmodified UK AISI Inspect framework from PyPI
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install "inspect-ai>=0.3.285" "inspect-evals>=0.29.0" openai cryptography "datasets>=4.8.5"
+          python3 -m pip freeze | grep -E '^(inspect-ai|inspect-evals|openai|cryptography|datasets)=='
+
+      - name: Mask endpoint host and credentials dynamically in runner logs
+        env:
+          BIG4_BASE_URL: ${{ secrets.BIG4_BASE_URL }}
+          BIG4_API_KEY: ${{ secrets.BIG4_API_KEY }}
+        run: |
+          python3 - <<'EOF'
+          import os, re, urllib.parse
+          url = os.environ.get("BIG4_BASE_URL", "").strip()
+          key = os.environ.get("BIG4_API_KEY", "").strip()
+          if not url or not key:
+              raise SystemExit("ERROR: BIG4_BASE_URL and BIG4_API_KEY repository secrets must both be configured.")
+          print(f"::add-mask::{url}")
+          host = urllib.parse.urlparse(url).hostname or ""
+          if host:
+              print(f"::add-mask::{host}")
+              nums = re.findall(r"\d+", host)
+              if len(nums) >= 3:
+                  print(f"::add-mask::{'.'.join(nums[:4])}")
+                  print(f"::add-mask::{'-'.join(nums[:4])}")
+          print(f"::add-mask::{key}")
+          print("Endpoint secret presence check: OK (masked)")
+          EOF
+
+      - name: Run UK AISI Inspect on Naked $0.00 Baseline (big4-base-free-nudo)
+        env:
+          BIG4_BASE_URL: ${{ secrets.BIG4_BASE_URL }}
+          BIG4_API_KEY: ${{ secrets.BIG4_API_KEY }}
+          LIMIT: ${{ github.event.inputs.sample_limit || '15' }}
+        run: |
+          mkdir -p logs/naked
+          COMMON_FLAGS="--model openai-api/big4/big4-base-free-nudo -M client_timeout=210 --limit ${LIMIT} --epochs 1 --temperature 0 --max-tokens 8192 --max-connections 3 --no-fail-on-error --score-on-error --retry-on-error=2 --display=plain --log-dir logs/naked"
+          inspect eval inspect_evals/mmlu_pro -T shuffle=false --sample-shuffle=42 ${COMMON_FLAGS}
+          inspect eval inspect_evals/truthfulqa --sample-shuffle=42 ${COMMON_FLAGS}
+          inspect eval inspect_evals/gpqa_diamond --sample-shuffle=42 ${COMMON_FLAGS}
+          inspect eval inspect_evals/humaneval -T sandbox=local --sample-shuffle=42 ${COMMON_FLAGS}
+
+      - name: Run UK AISI Inspect on Big4 Exocortex Cycle 5 $0.00 (big4-ciclo5-free)
+        env:
+          BIG4_BASE_URL: ${{ secrets.BIG4_BASE_URL }}
+          BIG4_API_KEY: ${{ secrets.BIG4_API_KEY }}
+          LIMIT: ${{ github.event.inputs.sample_limit || '15' }}
+        run: |
+          mkdir -p logs/big4_cycle5
+          COMMON_FLAGS="--model openai-api/big4/big4-ciclo5-free -M client_timeout=210 --limit ${LIMIT} --epochs 1 --temperature 0 --max-tokens 8192 --max-connections 2 --no-fail-on-error --score-on-error --retry-on-error=2 --display=plain --log-dir logs/big4_cycle5"
+          inspect eval inspect_evals/mmlu_pro -T shuffle=false --sample-shuffle=42 ${COMMON_FLAGS}
+          inspect eval inspect_evals/truthfulqa --sample-shuffle=42 ${COMMON_FLAGS}
+          inspect eval inspect_evals/gpqa_diamond --sample-shuffle=42 ${COMMON_FLAGS}
+          inspect eval inspect_evals/humaneval -T sandbox=local --sample-shuffle=42 ${COMMON_FLAGS}
+
+      - name: Verify Offline Ed25519 Cryptographic Receipts
+        env:
+          BIG4_BASE_URL: ${{ secrets.BIG4_BASE_URL }}
+          BIG4_API_KEY: ${{ secrets.BIG4_API_KEY }}
+        run: |
+          python3 scripts/verify_ed25519_receipt.py \
+            --public-key public_key_ed25519.pem \
+            --live-probe-count 5 \
+            --model big4-ciclo5-free \
+            --out ed25519_audit_report.json
+
+      - name: Render Public Audit Summary & Secret Leak Self-Check
+        env:
+          BIG4_BASE_URL: ${{ secrets.BIG4_BASE_URL }}
+          BIG4_API_KEY: ${{ secrets.BIG4_API_KEY }}
+        run: |
+          python3 scripts/render_step_summary.py \
+            --naked-dir logs/naked \
+            --big4-dir logs/big4_cycle5 \
+            --ed25519 ed25519_audit_report.json \
+            --out public_audit_summary.json
+
+      - name: Upload Sanitized Public Audit Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: uk-aisi-public-audit-summary
+          path: |
+            public_audit_summary.json
+            ed25519_audit_report.json
+          retention-days: 90
