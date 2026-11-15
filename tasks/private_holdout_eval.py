@@ -70,7 +70,7 @@ def load_jsonl_samples(dataset_path: str) -> tuple[List[Sample], bool, bool]:
 @task
 def private_holdout(dataset_path: str = "examples/private_holdout_sample.jsonl") -> Task:
     samples, has_mc, all_numeric = load_jsonl_samples(dataset_path)
-    dataset = MemoryDataset(samples=samples, name=os.path.basename(dataset_path))
+    dataset = MemoryDataset(samples=samples, name="private_holdout")
     if has_mc:
         return Task(dataset=dataset, solver=multiple_choice(), scorer=choice())
     return Task(dataset=dataset, solver=generate(), scorer=match(location="end", ignore_case=True, numeric=all_numeric))

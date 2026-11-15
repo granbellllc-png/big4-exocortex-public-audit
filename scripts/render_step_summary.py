@@ -143,7 +143,24 @@ def extract_task_and_samples(log_dir: str) -> tuple[List[Dict[str, Any]], Dict[t
 
         sample_correct_count = 0
         sample_seen_count = 0
-        if getattr(log, "samples", None):
+        if getattr(log, "reductions", None):
+            for red in log.reductions or []:
+                for r_samp in getattr(red, "samples", None) or []:
+                    sid = str(getattr(r_samp, "sample_id", ""))
+                    ok_val = _score_is_correct(r_samp)
+                    ans_text = str(getattr(r_samp, "answer", "") or "")
+                    if ok_val is not None and sid:
+                        sample_seen_count += 1
+                        if ok_val:
+                            sample_correct_count += 1
+                        samples_map[(task_name, sid)] = {
+                            "task": task_name,
+                            "sample_id": sid,
+                            "correct": ok_val,
+                            "answer_sha256_prefix": _sha256_short(ans_text),
+                        }
+                break
+        if sample_seen_count == 0 and getattr(log, "samples", None):
             for samp in log.samples or []:
                 sid = str(getattr(samp, "id", ""))
                 epoch = int(getattr(samp, "epoch", 1) or 1)
@@ -167,23 +184,6 @@ def extract_task_and_samples(log_dir: str) -> tuple[List[Dict[str, Any]], Dict[t
                         "correct": ok_val,
                         "answer_sha256_prefix": _sha256_short(ans_text),
                     }
-        elif getattr(log, "reductions", None):
-            for red in log.reductions or []:
-                for r_samp in getattr(red, "samples", None) or []:
-                    sid = str(getattr(r_samp, "sample_id", ""))
-                    ok_val = _score_is_correct(r_samp)
-                    ans_text = str(getattr(r_samp, "answer", "") or "")
-                    if ok_val is not None and sid:
-                        sample_seen_count += 1
-                        if ok_val:
-                            sample_correct_count += 1
-                        samples_map[(task_name, sid)] = {
-                            "task": task_name,
-                            "sample_id": sid,
-                            "correct": ok_val,
-                            "answer_sha256_prefix": _sha256_short(ans_text),
-                        }
-                break
 
         denom = total if total > 0 else max(completed, sample_seen_count)
         scored = sample_correct_count if sample_seen_count > 0 else (
@@ -371,7 +371,7 @@ def main() -> int:
     arm_a_indep_bool = str(args.arm_a_independent).strip().lower() == "true"
 
     summary: Dict[str, Any] = {
-        "schema_version": "2.0",
+        "schema_version": "2.1",
         "framework": "UK AI Safety Institute Inspect (inspect-ai + inspect-evals)",
         "non_affiliation_notice": (
             "Independent evaluation harness using the open-source Inspect library; "
@@ -405,7 +405,7 @@ def main() -> int:
     target_banner = f" | Target Model: `{args.target_model}`" if args.target_model else ""
     seed_banner = f" | Seed: `{args.sample_seed}`" if args.sample_seed else ""
     lines = [
-        f"## Independent Public Benchmark Audit (v2.0) — Inspect (`{args.audit_mode}`{target_banner}{seed_banner})",
+        f"## Paired Benchmark Evaluation Summary (v2.1) — Inspect (`{args.audit_mode}`{target_banner}{seed_banner})",
         "",
         f"- **Arm A Independence:** `{'DIRECT UPSTREAM PROVIDER (bypasses Big4 gateway)' if arm_a_indep_bool else 'VENDOR DEMO PASSTHROUGH (zero-key smoke mode)'}` (`{args.arm_a_routing_mode}`)",
         f"- **Code Sandbox:** `{args.humaneval_sandbox}` (credential-free container env)",
@@ -472,7 +472,7 @@ def main() -> int:
     md_text = "\n".join(lines) + "\n"
     json_text = json.dumps(summary, indent=2, ensure_ascii=False) + "\n"
     samples_payload = {
-        "schema_version": "2.0",
+        "schema_version": "2.1",
         "audit_mode": args.audit_mode,
         "sample_seed": args.sample_seed or None,
         "paired_items_count": len(sanitized_samples),

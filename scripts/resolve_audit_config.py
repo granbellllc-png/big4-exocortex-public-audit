@@ -92,6 +92,7 @@ def resolve_audit_config(
     byt_provider: str = "auto",
     sample_seed: str = "random",
     custom_holdout_jsonl: str = "",
+    arm_a_epochs: str = "1",
     big4_base_url: str = DEFAULT_BIG4_BASE_URL,
     big4_api_key: str = "",
     byt_api_key: str = "",
@@ -114,6 +115,14 @@ def resolve_audit_config(
     direct_key = (direct_baseline_api_key or "").strip() or byt
     seed_int = resolve_seed(sample_seed)
     holdout_path = (custom_holdout_jsonl or "").strip()
+
+    try:
+        epochs_int = int((arm_a_epochs or "1").strip())
+    except ValueError as exc:
+        raise ValueError("arm_a_epochs must be an integer between 1 and 15.") from exc
+    if not (1 <= epochs_int <= 15):
+        raise ValueError("arm_a_epochs must be an integer between 1 and 15.")
+    arm_a_temperature = "0.6" if epochs_int > 1 else "0"
 
     if custom_holdout_jsonl:
         holdout_norm = os.path.normpath(holdout_path)
@@ -189,6 +198,9 @@ def resolve_audit_config(
         probe_model = "big4-ciclo5-free"
         probe_byt = False
 
+    if epochs_int > 1:
+        arm_a_label = f"{arm_a_label} [Majority-Vote k={epochs_int}]"
+
     return {
         "AUDIT_MODE": mode,
         "TARGET_MODEL": target,
@@ -203,6 +215,8 @@ def resolve_audit_config(
         "ARM_A_INSPECT_MODEL": arm_a_inspect_model,
         "ARM_A_LABEL": arm_a_label,
         "ARM_A_USES_BYT": "true" if arm_a_byt else "false",
+        "ARM_A_EPOCHS": str(epochs_int),
+        "ARM_A_TEMPERATURE": arm_a_temperature,
         "ARM_B_MODEL": arm_b_model,
         "ARM_B_INSPECT_MODEL": arm_b_inspect_model,
         "ARM_B_LABEL": arm_b_label,
@@ -251,6 +265,7 @@ def main() -> int:
         byt_provider=os.environ.get("RAW_BYT_PROVIDER", "auto"),
         sample_seed=os.environ.get("RAW_SAMPLE_SEED", "random"),
         custom_holdout_jsonl=os.environ.get("RAW_CUSTOM_HOLDOUT_JSONL", ""),
+        arm_a_epochs=os.environ.get("RAW_ARM_A_EPOCHS", "1"),
         big4_base_url=big4_url,
         big4_api_key=big4_key,
         byt_api_key=byt_key,

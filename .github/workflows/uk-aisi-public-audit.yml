@@ -1,4 +1,4 @@
-name: UK AISI Inspect Public Audit (v2.0 Direct Baseline & BYT)
+name: UK AISI Inspect Public Audit (v2.1 Paired Baseline, Matched-Vote & BYT)
 
 on:
   workflow_dispatch:
@@ -36,9 +36,9 @@ on:
           - cerebras
           - nvidia
       sample_limit:
-        description: "Samples per benchmark (15 = 60-item smoke test; 100 = 400-item statistical audit)"
+        description: "Samples per benchmark (55 = 220-item statistical audit across 4 suites; 100 = 400-item deep audit)"
         required: false
-        default: "15"
+        default: "55"
         type: string
       sample_seed:
         description: "Shuffle seed ('random' generates a fresh CSPRNG seed at runtime; or pass an explicit non-negative integer)"
@@ -50,6 +50,15 @@ on:
         required: false
         default: ""
         type: string
+      arm_a_epochs:
+        description: "Number of Arm A samples per item (3 or 5 enables Inspect --epochs-reducer mode at temperature 0.6)"
+        required: false
+        default: "1"
+        type: choice
+        options:
+          - "1"
+          - "3"
+          - "5"
   push:
     branches:
       - main
@@ -59,9 +68,9 @@ permissions:
 
 jobs:
   uk-aisi-inspect-audit:
-    name: Hardened Inspect Public Audit (v2.0)
+    name: Hardened Inspect Public Audit (v2.1)
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    timeout-minutes: 150
 
     steps:
       - name: Checkout public audit repository
@@ -111,6 +120,7 @@ jobs:
           RAW_BYT_PROVIDER: ${{ github.event.inputs.byt_provider || 'auto' }}
           RAW_SAMPLE_SEED: ${{ github.event.inputs.sample_seed || 'random' }}
           RAW_CUSTOM_HOLDOUT_JSONL: ${{ github.event.inputs.custom_holdout_jsonl || '' }}
+          RAW_ARM_A_EPOCHS: ${{ github.event.inputs.arm_a_epochs || '1' }}
         run: |
           python3 scripts/resolve_audit_config.py --github-env "${GITHUB_ENV}" --emit-masks
 
@@ -124,13 +134,31 @@ jobs:
             --tcp-pings 3 \
             --out vps_target_proof.json
 
+      - name: Stage Ephemeral Secret Holdout If Configured
+        env:
+          PRIVATE_HOLDOUT_JSONL_B64: ${{ secrets.PRIVATE_HOLDOUT_JSONL_B64 }}
+          PRIVATE_HOLDOUT_JSONL: ${{ secrets.PRIVATE_HOLDOUT_JSONL }}
+        run: |
+          rm -f /tmp/big4_secret_holdout.jsonl
+          if [ -n "${PRIVATE_HOLDOUT_JSONL_B64}" ]; then
+            printf '%s' "${PRIVATE_HOLDOUT_JSONL_B64}" | tr -d '[:space:]' | base64 --decode > /tmp/big4_secret_holdout.jsonl
+            chmod 600 /tmp/big4_secret_holdout.jsonl
+            echo "SECRET_HOLDOUT_JSONL=/tmp/big4_secret_holdout.jsonl" >> "${GITHUB_ENV}"
+            echo "Staged secret-injected private holdout (base64) to ephemeral runner file."
+          elif [ -n "${PRIVATE_HOLDOUT_JSONL}" ]; then
+            printf '%s\n' "${PRIVATE_HOLDOUT_JSONL}" > /tmp/big4_secret_holdout.jsonl
+            chmod 600 /tmp/big4_secret_holdout.jsonl
+            echo "SECRET_HOLDOUT_JSONL=/tmp/big4_secret_holdout.jsonl" >> "${GITHUB_ENV}"
+            echo "Staged secret-injected private holdout to ephemeral runner file."
+          fi
+
       - name: Run UK AISI Inspect on Arm A (Direct Upstream Baseline or Zero-Key Demo)
         env:
           UPSTREAM_BASE_URL: ${{ env.UPSTREAM_BASE_URL }}
           UPSTREAM_API_KEY: ${{ secrets.DIRECT_BASELINE_API_KEY || secrets.BYT_API_KEY }}
           BIG4_BASE_URL: ${{ secrets.BIG4_BASE_URL || 'https://104-207-84-209.sslip.io/v1' }}
           BIG4_API_KEY: ${{ secrets.BIG4_API_KEY }}
-          LIMIT: ${{ github.event.inputs.sample_limit || '15' }}
+          LIMIT: ${{ github.event.inputs.sample_limit || '55' }}
         run: |
           [[ "${LIMIT}" =~ ^[0-9]+$ ]] && [ "${LIMIT}" -ge 1 ] && [ "${LIMIT}" -le 1000 ] || { echo "Invalid sample_limit: ${LIMIT}" >&2; exit 1; }
           if [ "${ARM_A_INDEPENDENT}" = "true" ]; then
@@ -139,7 +167,11 @@ jobs:
             unset UPSTREAM_API_KEY UPSTREAM_BASE_URL
           fi
           mkdir -p logs/arm_a
-          COMMON_FLAGS="--model ${ARM_A_INSPECT_MODEL} -M stream=false -M client_timeout=210 --limit ${LIMIT} --epochs 1 --temperature 0 --max-tokens 8192 --max-connections 3 --max-sandboxes 2 --no-fail-on-error --score-on-error --retry-on-error=2 --display=plain --log-dir logs/arm_a"
+          EPOCH_FLAGS="--epochs 1 --temperature ${ARM_A_TEMPERATURE}"
+          if [ "${ARM_A_EPOCHS}" -gt 1 ]; then
+            EPOCH_FLAGS="--epochs ${ARM_A_EPOCHS} --epochs-reducer mode --temperature ${ARM_A_TEMPERATURE}"
+          fi
+          COMMON_FLAGS="--model ${ARM_A_INSPECT_MODEL} -M stream=false -M client_timeout=210 --limit ${LIMIT} ${EPOCH_FLAGS} --max-tokens 8192 --max-connections 3 --max-sandboxes 2 --no-fail-on-error --score-on-error --retry-on-error=2 --display=plain --log-dir logs/arm_a"
           inspect eval inspect_evals/mmlu_pro -T shuffle=false --sample-shuffle=${SAMPLE_SEED} ${COMMON_FLAGS}
           inspect eval inspect_evals/truthfulqa -T target=mc1 --sample-shuffle=${SAMPLE_SEED} ${COMMON_FLAGS}
           inspect eval inspect_evals/gpqa_diamond --sample-shuffle=${SAMPLE_SEED} ${COMMON_FLAGS}
@@ -147,6 +179,8 @@ jobs:
           if [ -n "${CUSTOM_HOLDOUT_JSONL}" ]; then
             [[ "${CUSTOM_HOLDOUT_JSONL}" != /* && "${CUSTOM_HOLDOUT_JSONL}" != *".."* && -f "${CUSTOM_HOLDOUT_JSONL}" ]] || { echo "Invalid custom_holdout_jsonl path" >&2; exit 1; }
             inspect eval tasks/private_holdout_eval.py -T "dataset_path=${CUSTOM_HOLDOUT_JSONL}" --sample-shuffle=${SAMPLE_SEED} ${COMMON_FLAGS}
+          elif [ -n "${SECRET_HOLDOUT_JSONL:-}" ] && [ -f "${SECRET_HOLDOUT_JSONL}" ]; then
+            inspect eval tasks/private_holdout_eval.py -T "dataset_path=${SECRET_HOLDOUT_JSONL}" --sample-shuffle=${SAMPLE_SEED} ${COMMON_FLAGS}
           fi
 
       - name: Run UK AISI Inspect on Arm B (Big4 Cycle 5 via Local Receipt-Verifying Proxy)
@@ -154,7 +188,7 @@ jobs:
           REAL_BIG4_BASE_URL: ${{ secrets.BIG4_BASE_URL || 'https://104-207-84-209.sslip.io/v1' }}
           BIG4_API_KEY: ${{ secrets.BIG4_API_KEY }}
           BYT_API_KEY: ${{ secrets.BYT_API_KEY }}
-          LIMIT: ${{ github.event.inputs.sample_limit || '15' }}
+          LIMIT: ${{ github.event.inputs.sample_limit || '55' }}
         run: |
           [[ "${LIMIT}" =~ ^[0-9]+$ ]] && [ "${LIMIT}" -ge 1 ] && [ "${LIMIT}" -le 1000 ] || { echo "Invalid sample_limit: ${LIMIT}" >&2; exit 1; }
           if [ "${ARM_B_USES_BYT}" != "true" ]; then
@@ -192,7 +226,7 @@ jobs:
           fi
           export BIG4_BASE_URL="http://127.0.0.1:18080/v1"
 
-          COMMON_FLAGS="--model ${ARM_B_INSPECT_MODEL} -M stream=false -M client_timeout=210 --limit ${LIMIT} --epochs 1 --temperature 0 --max-tokens 8192 --max-connections 2 --max-sandboxes 2 --no-fail-on-error --score-on-error --retry-on-error=2 --display=plain --log-dir logs/arm_b"
+          COMMON_FLAGS="--model ${ARM_B_INSPECT_MODEL} -M stream=false -M client_timeout=210 --limit ${LIMIT} --epochs 1 --temperature 0 --max-tokens 8192 --max-connections 3 --max-sandboxes 2 --no-fail-on-error --score-on-error --retry-on-error=2 --display=plain --log-dir logs/arm_b"
           inspect eval inspect_evals/mmlu_pro -T shuffle=false --sample-shuffle=${SAMPLE_SEED} ${COMMON_FLAGS}
           inspect eval inspect_evals/truthfulqa -T target=mc1 --sample-shuffle=${SAMPLE_SEED} ${COMMON_FLAGS}
           inspect eval inspect_evals/gpqa_diamond --sample-shuffle=${SAMPLE_SEED} ${COMMON_FLAGS}
@@ -200,6 +234,8 @@ jobs:
           if [ -n "${CUSTOM_HOLDOUT_JSONL}" ]; then
             [[ "${CUSTOM_HOLDOUT_JSONL}" != /* && "${CUSTOM_HOLDOUT_JSONL}" != *".."* && -f "${CUSTOM_HOLDOUT_JSONL}" ]] || { echo "Invalid custom_holdout_jsonl path" >&2; exit 1; }
             inspect eval tasks/private_holdout_eval.py -T "dataset_path=${CUSTOM_HOLDOUT_JSONL}" --sample-shuffle=${SAMPLE_SEED} ${COMMON_FLAGS}
+          elif [ -n "${SECRET_HOLDOUT_JSONL:-}" ] && [ -f "${SECRET_HOLDOUT_JSONL}" ]; then
+            inspect eval tasks/private_holdout_eval.py -T "dataset_path=${SECRET_HOLDOUT_JSONL}" --sample-shuffle=${SAMPLE_SEED} ${COMMON_FLAGS}
           fi
 
       - name: Verify Captured Benchmark Ed25519 Receipts Offline
@@ -246,3 +282,7 @@ jobs:
             ed25519_audit_report.json
             vps_target_proof.json
           retention-days: 90
+
+      - name: Cleanup Ephemeral Secret Holdout
+        if: always()
+        run: rm -f /tmp/big4_secret_holdout.jsonl
