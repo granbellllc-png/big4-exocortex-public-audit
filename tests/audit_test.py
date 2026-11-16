@@ -182,9 +182,10 @@ def test_n60_published_bundle_exists_and_has_zero_secret_leaks() -> None:
     q_path = bundle_dir / "questions_n60_blind.json"
     gt_path = bundle_dir / "ground_truth_n60_sealed.json"
     tel_path = bundle_dir / "measured_telemetry_and_ledger.json"
+    qa_path = bundle_dir / "qa_full_responses_n60.json"
     doc_path = bundle_dir / "README.md"
 
-    for p in (q_path, gt_path, tel_path, doc_path):
+    for p in (q_path, gt_path, tel_path, qa_path, doc_path):
         assert p.is_file(), f"Missing published N=60 bundle artifact: {p}"
 
     q_data = json.loads(q_path.read_text(encoding="utf-8"))
@@ -211,6 +212,11 @@ def test_n60_published_bundle_exists_and_has_zero_secret_leaks() -> None:
     check_no_secret_leak(q_path.read_text(encoding="utf-8"))
     check_no_secret_leak(gt_path.read_text(encoding="utf-8").replace("https://example.com", "https://github.com"))
     check_no_secret_leak(tel_text)
+    qa_text = qa_path.read_text(encoding="utf-8")
+    qa_data = json.loads(qa_text)
+    assert qa_data["total_items"] == 60
+    assert len(qa_data["items"]) == 60
+    check_no_secret_leak(qa_text.replace("https://example.com", "https://github.com"))
     check_no_secret_leak(doc_path.read_text(encoding="utf-8"))
 
 
@@ -218,3 +224,5 @@ def test_no_promotional_zero_trust_or_gov_evaluator_claims() -> None:
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     assert "Zero-Trust" not in readme
     assert "government evaluators" not in readme
+    assert "10.34740/kaggle/w/126241" in readme
+    assert "qa_full_responses_n60.json" in readme

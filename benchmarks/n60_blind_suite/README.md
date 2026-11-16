@@ -10,6 +10,8 @@ This directory contains the reproducible blind evaluation artifacts behind the G
   - Sealed ground-truth answer key used for automated post-run scoring.
 - `measured_telemetry_and_ledger.json`
   - Per-arm scores, exact paired McNemar calculations (including the `k=3` `$0.00` matched-budget majority-vote ablation), measured `prompt_tokens` / `completion_tokens` / `wall_ms` / `cost_reported` per item, and sanitized OpenRouter wallet telemetry events.
+- `qa_full_responses_n60.json`
+  - All `60` prompts, expected ground truths, and sanitized verbatim model responses across `8` evaluated configurations (`base_free_nudo`, `big4_ciclo5_free`, `gemma4_31b_nudo`, `gemma4_31b_big4`, `claude_sonnet_4_6_nudo`, `claude_sonnet_4_6_big4`, `glm_5_3_nudo`, `glm_5_3_big4`) so external reviewers can inspect every individual failure and recovery (`MMLU_PRO_12`, `TRUTHFULQA_5`, `TRUTHFULQA_7`, `GPQA_DIAMOND_2`, `GPQA_DIAMOND_8` vs `TRUTHFULQA_3`, `TRUTHFULQA_11`, `GPQA_DIAMOND_3`, `GPQA_DIAMOND_9`, `GPQA_DIAMOND_13`).
 
 ## Key Empirical Context & Methodological Caveats
 

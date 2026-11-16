@@ -26,7 +26,7 @@
 
 ## Published `N = 60` Blind Suite & Raw Measured Telemetry (`benchmarks/n60_blind_suite/`)
 
-To provide full empirical transparency rather than summary percentages alone, [`benchmarks/n60_blind_suite/`](./benchmarks/n60_blind_suite/README.md) publishes the exact `N = 60` blind test items (`15` per suite, excluding saturated `GSM8K`/`MATH-500`), sealed ground truth (`SHA-256: a5a74743cf8f8aa9ed2d52829d48a0f72b07f991dd5789e5a4a008c005d63d91`), per-item pass/fail outcomes, exact token/latency telemetry, and sanitized OpenRouter wallet events from our Grid-1 / Grid-2 runs:
+To provide full empirical transparency rather than summary percentages alone, [`benchmarks/n60_blind_suite/`](./benchmarks/n60_blind_suite/README.md) publishes the exact `N = 60` blind test items (`15` per suite, excluding saturated `GSM8K`/`MATH-500`), sealed ground truth (`SHA-256: a5a74743cf8f8aa9ed2d52829d48a0f72b07f991dd5789e5a4a008c005d63d91`), per-item pass/fail outcomes, exact token/latency telemetry, sanitized OpenRouter wallet events, and **all `60` verbatim prompts + model completions across `8` evaluated configurations** in [`benchmarks/n60_blind_suite/qa_full_responses_n60.json`](./benchmarks/n60_blind_suite/qa_full_responses_n60.json) *(note: because this `60`-item suite is now public, do not reuse it as a blind holdout)*:
 
 | Arm / Configuration | Score (`N=60`) | Prompt / Completion Tokens | Completion Multiplier vs Naked Gemma | Measured Cost (`USD`) | Median Wall Time |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -41,8 +41,19 @@ To provide full empirical transparency rather than summary percentages alone, [`
 
 ### Methodological Findings & Known Limitations
 1. **Statistical Power at `N = 60` (`10` discordant pairs):** `Gemma 4 31B` + Big4 (`51/60`) and naked `Claude Sonnet 4.6` (`51/60`) agree on `50` items (`46` both pass, `4` both fail) and disagree on `10` items (`5` won only by `Gemma+Big4`, `5` won only by `Sonnet`, two-sided exact McNemar `p = 1.0`). Numerical parity on `N = 60` reflects behavior under that `60`-item sample and token multiplier (`17.33x` completion tokens); it does not establish universal capability equivalence across arbitrary workloads.
-2. **Orchestration Wrapper Does Not Automatically Transfer Upward:** Applying the verbose multi-stage verification wrapper directly onto `Claude Sonnet 4.6` reduced score from `51/60` (`85.00%`) to `49/60` (`81.67%`, notably on `GPQA Diamond`). Calibration matters per model family.
-3. **Matched-Budget Baseline (`arm_a_epochs` + `k=3` Ablation):** On our `$0.00` `N = 60` ablation, Cycle 5 tied `k = 3` majority voting on accuracy (`50/60`, exact McNemar `p = 1.0`) while achieving `2.19x` faster median wall latency (`4.66 s` vs `10.20 s`) via adaptive early stopping when Cycle 1 legs agree. In `v2.1`, GitHub Actions exposes `arm_a_epochs` (`1`, `3`, `5` with `--epochs-reducer mode` at `temperature = 0.6`), and `scripts/render_step_summary.py` reads Inspect `log.reductions` before raw `log.samples` so multi-epoch reductions pair accurately against single-epoch `Arm B`.
+2. **Weak-to-Strong Critic Interference on Frontier Models:** Applying the Cycle 5 wrapper onto `Claude Sonnet 4.6` reduced accuracy from `51/60` (`85.00%`) to `49/60` (`81.67%`, dropping from `10/15` to `7/15` on `GPQA Diamond`), and reduced `DeepSeek V4 Pro` from `52/60` to `48/60`. Inspection shows why: internal secondary critic stages executed on smaller `27B–120B` open-weight models (`Qwen 3.8 27B`, `gpt-oss-120b`), introducing weak-to-strong self-doubt when judging frontier primaries on closed-book science trivia.
+3. **BYT Wallet Reconciliation (`$0.0231` vs `$0.2116` List Ceiling) & Commercial Cost:** Why did the OpenRouter BYT wallet record `$0.023126` for `Gemma 4 31B` + Cycle 5 despite `603,153` total reported tokens? Because only the primary `google/gemma-4-31b-it` generation and final BYT tie-breaker (~`55k` tokens) billed the OpenRouter BYT subkey, whereas the remaining ~`548k` intermediate critic tokens executed on Big4's server-side open-weight keys (`Cerebras`/`Groq`/`:free`). In commercial production using contractual ZDR open-weight APIs rather than `:free` sandboxes, running all `6k–10k` total Cycle 5 tokens implies roughly `$0.002–$0.006` per call (`$2–$6` per `1,000` calls).
+4. **Matched-Budget Baseline (`arm_a_epochs` + `k=3` Ablation):** On pure closed-book QA without deterministic external verifiers, Cycle 5 tied `k = 3` majority voting on accuracy (`50/60`, exact McNemar `p = 1.0`) while achieving `2.19x` faster median wall latency (`4.66 s` vs `10.20 s`) via adaptive early stopping when Cycle 1 legs agree. In `v2.1`, GitHub Actions exposes `arm_a_epochs` (`1`, `3`, `5` with `--epochs-reducer mode` at `temperature = 0.6`), and `scripts/render_step_summary.py` reads Inspect `log.reductions` before raw `log.samples` so multi-epoch reductions pair accurately against single-epoch `Arm B`.
+
+---
+
+## Related Open-Source Research on Gemma 4 Verification (`DOI: 10.34740/kaggle/w/126241`)
+
+Where formal or executable verification improves reliability beyond closed-book majority voting is **stateful software repair and deterministic invariant checking**, where repeated blind sampling oscillates among failing patches whereas sandboxed test + difference-logic (`QF_RDL`) pruning enforces monotonic progress:
+
+- **Published Paper (Google DeepMind — The Gemma 4 Developer Agent Paper Track):** *Topological Code-Graph Slicing and Contractive Lyapunov Verification for On-Device Gemma 4 SWE Agents* — DataCite DOI: [`10.34740/kaggle/w/126241`](https://doi.org/10.34740/kaggle/w/126241) ([Kaggle Writeup](https://www.kaggle.com/competitions/gemma-4-developer-agent-paper/writeups/wayfinder-v31-gemma4-tcgs-lyapunov))
+- **Open-Source Repository (`Apache 2.0`):** [`github.com/granbellllc-png/gemma-wayfinder-agent`](https://github.com/granbellllc-png/gemma-wayfinder-agent)
+- **Public Dual-GPU Verification Notebook (`2x Tesla T4`, official `google/gemma-4` `E2B-it` & `E4B-it` weights):** [`kaggle.com/code/alexmaxi/gemma-4-tcgs-lyapunov-swe-agent-verification`](https://www.kaggle.com/code/alexmaxi/gemma-4-tcgs-lyapunov-swe-agent-verification) — demonstrates repository repair gains on multi-file Python repos (`E2B-it`: `1/20 -> 4/20`; `E4B-it`: `8/20 -> 12/20` vs `10/20` fixed contraction across `100` unit tests under a `6`-call cap, `0.0%` cyclic thrash).
 
 ---
 
@@ -83,7 +94,7 @@ python3 scripts/verify_vps_target.py --expected-ip 104.207.84.209
    - **Never commit confidential questions to a public fork.** Import privately via `https://github.com/new/import` (**Private** visibility) or execute locally.
    - Add **`BIG4_API_KEY`**, **`DIRECT_BASELINE_API_KEY`** / disposable **`BYT_API_KEY`** (`$1.00`-capped OpenRouter sub-key), and optional **`PRIVATE_HOLDOUT_JSONL_B64`** under **Settings -> Secrets and variables -> Actions**.
    - Run **`Actions` -> `Run workflow`**:
-     - `audit_mode`: `free_big4_vs_direct_provider` or `byt_model_boost`
+     - `audit_mode`: use `byt_model_boost` (with a `$1.00–$2.00`-capped `BYT_API_KEY`) to compare `target_model` (`google/gemma-4-31b-it`, `arm_a_epochs = 5`) against `target_model` + Cycle 5; or `free_big4_vs_direct_provider` to compare `$0.00` `big4-ciclo5-free` directly against `target_model`.
      - `arm_a_epochs`: `1`, `3`, or `5` (matched majority-vote `--epochs-reducer mode`)
      - `sample_limit`: `55` (`220` items default) or `100` (`400` items)
      - `sample_seed`: `random`
