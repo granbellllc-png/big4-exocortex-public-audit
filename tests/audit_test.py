@@ -220,6 +220,36 @@ def test_n60_published_bundle_exists_and_has_zero_secret_leaks() -> None:
     check_no_secret_leak(doc_path.read_text(encoding="utf-8"))
 
 
+def test_verifiable_swe_repair_suite_and_config() -> None:
+    import sys
+    from render_step_summary import check_no_secret_leak
+
+    swe_mod_path = REPO_ROOT / "tasks"
+    if str(swe_mod_path) not in sys.path:
+        sys.path.insert(0, str(swe_mod_path))
+    import verifiable_swe_eval as swe_mod
+
+    assert len(swe_mod.SWE_REPAIR_SPECS) == 20
+    check_no_secret_leak((REPO_ROOT / "tasks" / "verifiable_swe_eval.py").read_text(encoding="utf-8"))
+    for spec in swe_mod.SWE_REPAIR_SPECS:
+        ok_bug, _ = swe_mod.run_spec_tests_local(spec, spec["buggy_code"])
+        ok_ref, err_ref = swe_mod.run_spec_tests_local(spec, spec["reference_code"])
+        assert not ok_bug, f"Buggy code unexpectedly passed for {spec['id']}"
+        assert ok_ref, f"Reference code failed for {spec['id']}: {err_ref}"
+
+    cfg_on = resolve_audit_config(
+        audit_mode="free_zero_cost",
+        include_swe_repair="true",
+        big4_api_key="sk-big4-dummy-audit-token-1234",
+    )
+    assert cfg_on["INCLUDE_SWE_REPAIR"] == "true"
+    cfg_off = resolve_audit_config(
+        audit_mode="free_zero_cost",
+        big4_api_key="sk-big4-dummy-audit-token-1234",
+    )
+    assert cfg_off["INCLUDE_SWE_REPAIR"] == "false"
+
+
 def test_no_promotional_zero_trust_or_gov_evaluator_claims() -> None:
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     assert "Zero-Trust" not in readme

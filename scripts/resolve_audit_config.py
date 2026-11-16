@@ -93,6 +93,7 @@ def resolve_audit_config(
     sample_seed: str = "random",
     custom_holdout_jsonl: str = "",
     arm_a_epochs: str = "1",
+    include_swe_repair: str = "false",
     big4_base_url: str = DEFAULT_BIG4_BASE_URL,
     big4_api_key: str = "",
     byt_api_key: str = "",
@@ -128,6 +129,11 @@ def resolve_audit_config(
         holdout_norm = os.path.normpath(holdout_path)
         if os.path.isabs(holdout_path) or holdout_norm.startswith("..") or ".." in holdout_path:
             raise ValueError("custom_holdout_jsonl must be a relative path inside the repository.")
+
+    swe_raw = str(include_swe_repair or "false").strip().lower()
+    if swe_raw not in ("true", "false", "1", "0", ""):
+        raise ValueError("include_swe_repair must be 'true' or 'false'.")
+    include_swe_flag = swe_raw in ("true", "1")
 
     if not key:
         raise ValueError("BIG4_API_KEY must be configured.")
@@ -217,6 +223,7 @@ def resolve_audit_config(
         "ARM_A_USES_BYT": "true" if arm_a_byt else "false",
         "ARM_A_EPOCHS": str(epochs_int),
         "ARM_A_TEMPERATURE": arm_a_temperature,
+        "INCLUDE_SWE_REPAIR": "true" if include_swe_flag else "false",
         "ARM_B_MODEL": arm_b_model,
         "ARM_B_INSPECT_MODEL": arm_b_inspect_model,
         "ARM_B_LABEL": arm_b_label,
@@ -266,6 +273,7 @@ def main() -> int:
         sample_seed=os.environ.get("RAW_SAMPLE_SEED", "random"),
         custom_holdout_jsonl=os.environ.get("RAW_CUSTOM_HOLDOUT_JSONL", ""),
         arm_a_epochs=os.environ.get("RAW_ARM_A_EPOCHS", "1"),
+        include_swe_repair=os.environ.get("RAW_INCLUDE_SWE_REPAIR", "false"),
         big4_base_url=big4_url,
         big4_api_key=big4_key,
         byt_api_key=byt_key,

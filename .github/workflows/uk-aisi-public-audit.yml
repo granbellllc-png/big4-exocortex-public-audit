@@ -59,6 +59,11 @@ on:
           - "1"
           - "3"
           - "5"
+      include_swe_repair:
+        description: "Run deterministic 20-item Python invariant bug-repair suite (tasks/verifiable_swe_eval.py) inside airgapped Docker sandbox"
+        required: false
+        default: false
+        type: boolean
   push:
     branches:
       - main
@@ -121,6 +126,7 @@ jobs:
           RAW_SAMPLE_SEED: ${{ github.event.inputs.sample_seed || 'random' }}
           RAW_CUSTOM_HOLDOUT_JSONL: ${{ github.event.inputs.custom_holdout_jsonl || '' }}
           RAW_ARM_A_EPOCHS: ${{ github.event.inputs.arm_a_epochs || '1' }}
+          RAW_INCLUDE_SWE_REPAIR: ${{ github.event.inputs.include_swe_repair || 'false' }}
         run: |
           python3 scripts/resolve_audit_config.py --github-env "${GITHUB_ENV}" --emit-masks
 
@@ -176,6 +182,9 @@ jobs:
           inspect eval inspect_evals/truthfulqa -T target=mc1 --sample-shuffle=${SAMPLE_SEED} ${COMMON_FLAGS}
           inspect eval inspect_evals/gpqa_diamond --sample-shuffle=${SAMPLE_SEED} ${COMMON_FLAGS}
           inspect eval inspect_evals/humaneval --sandbox docker:docker/humaneval-compose.yaml --sample-shuffle=${SAMPLE_SEED} ${COMMON_FLAGS}
+          if [ "${INCLUDE_SWE_REPAIR:-false}" = "true" ]; then
+            inspect eval tasks/verifiable_swe_eval.py --sandbox docker:docker/humaneval-compose.yaml --sample-shuffle=${SAMPLE_SEED} ${COMMON_FLAGS}
+          fi
           if [ -n "${CUSTOM_HOLDOUT_JSONL}" ]; then
             [[ "${CUSTOM_HOLDOUT_JSONL}" != /* && "${CUSTOM_HOLDOUT_JSONL}" != *".."* && -f "${CUSTOM_HOLDOUT_JSONL}" ]] || { echo "Invalid custom_holdout_jsonl path" >&2; exit 1; }
             inspect eval tasks/private_holdout_eval.py -T "dataset_path=${CUSTOM_HOLDOUT_JSONL}" --sample-shuffle=${SAMPLE_SEED} ${COMMON_FLAGS}
@@ -231,6 +240,9 @@ jobs:
           inspect eval inspect_evals/truthfulqa -T target=mc1 --sample-shuffle=${SAMPLE_SEED} ${COMMON_FLAGS}
           inspect eval inspect_evals/gpqa_diamond --sample-shuffle=${SAMPLE_SEED} ${COMMON_FLAGS}
           inspect eval inspect_evals/humaneval --sandbox docker:docker/humaneval-compose.yaml --sample-shuffle=${SAMPLE_SEED} ${COMMON_FLAGS}
+          if [ "${INCLUDE_SWE_REPAIR:-false}" = "true" ]; then
+            inspect eval tasks/verifiable_swe_eval.py --sandbox docker:docker/humaneval-compose.yaml --sample-shuffle=${SAMPLE_SEED} ${COMMON_FLAGS}
+          fi
           if [ -n "${CUSTOM_HOLDOUT_JSONL}" ]; then
             [[ "${CUSTOM_HOLDOUT_JSONL}" != /* && "${CUSTOM_HOLDOUT_JSONL}" != *".."* && -f "${CUSTOM_HOLDOUT_JSONL}" ]] || { echo "Invalid custom_holdout_jsonl path" >&2; exit 1; }
             inspect eval tasks/private_holdout_eval.py -T "dataset_path=${CUSTOM_HOLDOUT_JSONL}" --sample-shuffle=${SAMPLE_SEED} ${COMMON_FLAGS}
